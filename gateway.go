@@ -26,7 +26,7 @@ func NewServiceDiscover(dir string) (discover *ServiceDiscover) {
 	return
 }
 
-func (discover *ServiceDiscover)watch() {
+func (discover *ServiceDiscover)watch(ctx context.Context) {
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"localhost:2379"},
 		DialTimeout: 5 * time.Second,
@@ -34,6 +34,7 @@ func (discover *ServiceDiscover)watch() {
 	if err != nil {
 		os.Exit(1)
 	}
+	defer client.Close()
 
 	var curRevision int64 = 0
 
@@ -58,8 +59,10 @@ func (discover *ServiceDiscover)watch() {
 
 	// 监听后续的PUT与DELETE事件
 	watcher := clientv3.NewWatcher(client)
-	watchChan := watcher.Watch(context.TODO(), discover.dir, clientv3.WithPrefix(), clientv3.WithRev(curRevision))
-	for watchResp := range watchChan {
+	defer watcher.Close()
+
+	watchChan := watcher.Watch(ctx, discover.dir, clientv3.WithPrefix(), clientv3.WithRev(curRevision))
+	for watchResp := range watchChan { // if ctx is Done, for loop will break
 		for _, event := range watchResp.Events {
 			discover.mutex.Lock()
 			switch (event.Type) {
@@ -73,6 +76,8 @@ func (discover *ServiceDiscover)watch() {
 			discover.mutex.Unlock()
 		}
 	}
+
+	fmt.Println("停止监听")
 }
 
 func (discover *ServiceDiscover)Nodes() (nodes []string) {
@@ -94,10 +99,23 @@ func (discover *ServiceDiscover)Nodes() (nodes []string) {
 
 func main()  {
 	discover := NewServiceDiscover("/agent")
-	go discover.watch()
+
+	// 演示如何通过context停止一个watcher
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	go discover.watch(ctx)
+
+	cnt := 0
 
 	for {
+		cnt++
+		if cnt > 10 {
+			cancelFunc()
+			break
+		}
 		time.Sleep(time.Duration(1) * time.Second)
 		fmt.Println(discover.Nodes())
 	}
+
+	time.Sleep(5 * time.Second)
 }
